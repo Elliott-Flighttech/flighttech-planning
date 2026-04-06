@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flight Tech — Planning Board</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0d1117; font-family: 'DM Sans', sans-serif; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238892a4' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px !important; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.flight-row { animation: fadeIn 0.3s ease; }
+.flight-row:hover { background: rgba(255,255,255,0.03) !important; }
+.stat-card:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+.view-btn { transition: all 0.2s; }
+.view-btn:hover { background: rgba(255,255,255,0.1) !important; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo, useCallback, Fragment } = React;
+
+// ─── Storage helpers (localStorage for GitHub Pages) ───
+const STORAGE_KEY = "ft-flights";
+const CLIENTS_KEY = "ft-clients";
+const SHEETS_CONFIG_KEY = "ft-sheets-config";
+
+const buildSheetCSVUrl = (sheetId, gid) =>
+  `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
+
+const parseCSV = (text) => {
+  const lines = text.split("\n").filter((l) => l.trim());
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(",").map((h) => h.trim().replace(/^"|"$/g, ""));
+  return lines.slice(1).map((line) => {
+    const values = [];
+    let current = "";
+    let inQuotes = false;
+    for (const ch of line) {
+      if (ch === '"') { inQuotes = !inQuotes; }
+      else if (ch === "," && !inQuotes) { values.push(current.trim()); current = ""; }
+      else { current += ch; }
+    }
+    values.push(current.trim());
+    const obj = {};
+    headers.forEach((h, i) => { obj[h] = (values[i] || "").replace(/^"|"$/g, ""); });
+    return obj;
+  }).filter((row) => row.tail_number && row.arrival_date);
+};
+
+const sheetRowToFlight = (row, clientId) => ({
+  id: `gs-${clientId}-${row.tail_number}-${row.arrival_date}-${row.arrival_time}`,
+  clientId,
+  tailNumber: (row.tail_number || "").toUpperCase(),
+  arrivalDate: row.arrival_date || "",
+  arrivalTime: row.arrival_time || "00:00",
+  departureDate: row.departure_date || row.arrival_date || "",
+  departureTime: row.departure_time || "23:59",
+  serviceType: row.service_type || "transit",
+  aircraftType: row.aircraft_type || "",
+  bay: row.bay || "",
+  notes: row.notes || "",
+  status: row.status || "scheduled",
+});
+
+const DEFAULT_CLIENTS = [
+  { id: "c1", name: "LATAM", color: "#1E3A5F", short: "LTM" },
+  { id: "c2", name: "Boliviana de Aviación", color: "#F97316", short: "BOA" },
+  { id: "c3", name: "Copa Cargo", color: "#0EA5E9", short: "COPC" },
+  { id: "c4", name: "Royal Air Maroc", color: "#10B981", short: "RAM" },
+  { id: "c5", name: "Fly2Sky", color: "#8B5CF6", short: "F2S" },
+  { id: "c6", name: "TAB", color: "#EF4444", short: "TAB" },
+];
+
+const SERVICE_TYPES = [
+  { id: "transit", label: "Transit", labelEs: "Tránsito" },
+  { id: "a-check", label: "A-Check", labelEs: "A-Check" },
+  { id: "b-check", label: "B-Check", labelEs: "B-Check" },
+  { id: "c-check", label: "C-Check", labelEs: "C-Check" },
+  { id: "scheduled", label: "Scheduled Work", labelEs: "Trabajo Programado" },
+  { id: "aog", label: "AOG", labelEs: "AOG" },
+];
+
+const loadData = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch { return fallback; }
+};
+const saveData = (key, data) => {
+  try { localStorage.setItem(key, JSON.stringify(data)); } catch(e) { console.error(e); }
+};
+
+const MIAMI_TZ = "America/New_York";
+const fmtDay = (d) => new Date(d).toLocaleDateString("es-US", { timeZone: MIAMI_TZ, weekday: "short", month: "short", day: "numeric" });
+const todayStr = () => new Date().toLocaleDateString("en-CA", { timeZone: MIAMI_TZ });
+
+const getWeekRange = (dateStr) => {
+  const d = new Date(dateStr + "T12:00:00");
+  const day = d.getDay();
+  const mon = new Date(d); mon.setDate(d.getDate() - ((day + 6) % 7));
+  const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+  return { start: mon.toISOString().slice(0, 10), end: sun.toISOString().slice(0, 10) };
+};
+const getMonthRange = (dateStr) => {
+  const d = new Date(dateStr + "T12:00:00");
+  return { start: new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0,10), end: new Date(d.getFullYear(), d.getMonth()+1, 0).toISOString().slice(0,10) };
+};
+const getDatesInRange = (start, end) => {
+  const dates = []; let cur = new Date(start + "T12:00:00"); const last = new Date(end + "T12:00:00");
+  while (cur <= last) { dates.push(cur.toISOString().slice(0, 10)); cur.setDate(cur.getDate() + 1); }
+  return dates;
+};
+const timeToMinutes = (t) => { const [h, m] = t.split(":").map(Number); return h * 60 + (m || 0); };
+
+const Icon = ({ name, size = 18 }) => {
+  const icons = {
+    plane: React.createElement("path", {d:"M21 16v-2l-8-5V3.5A1.5 1.5 0 0 0 11.5 2 1.5 1.5 0 0 0 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"}),
+    plus: React.createElement(Fragment, null, React.createElement("line",{x1:12,y1:5,x2:12,y2:19}), React.createElement("line",{x1:5,y1:12,x2:19,y2:12})),
+    calendar: React.createElement(Fragment, null, React.createElement("rect",{x:3,y:4,width:18,height:18,rx:2,ry:2}), React.createElement("line",{x1:16,y1:2,x2:16,y2:6}), React.createElement("line",{x1:8,y1:2,x2:8,y2:6}), React.createElement("line",{x1:3,y1:10,x2:21,y2:10})),
+    list: React.createElement(Fragment, null, React.createElement("line",{x1:8,y1:6,x2:21,y2:6}), React.createElement("line",{x1:8,y1:12,x2:21,y2:12}), React.createElement("line",{x1:8,y1:18,x2:21,y2:18}), React.createElement("line",{x1:3,y1:6,x2:3.01,y2:6}), React.createElement("line",{x1:3,y1:12,x2:3.01,y2:12}), React.createElement("line",{x1:3,y1:18,x2:3.01,y2:18})),
+    grid: React.createElement(Fragment, null, React.createElement("rect",{x:3,y:3,width:7,height:7}), React.createElement("rect",{x:14,y:3,width:7,height:7}), React.createElement("rect",{x:3,y:14,width:7,height:7}), React.createElement("rect",{x:14,y:14,width:7,height:7})),
+    trash: React.createElement(Fragment, null, React.createElement("polyline",{points:"3 6 5 6 21 6"}), React.createElement("path",{d:"M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"})),
+    edit: React.createElement(Fragment, null, React.createElement("path",{d:"M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"}), React.createElement("path",{d:"M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"})),
+    x: React.createElement(Fragment, null, React.createElement("line",{x1:18,y1:6,x2:6,y2:18}), React.createElement("line",{x1:6,y1:6,x2:18,y2:18})),
+    check: React.createElement("polyline",{points:"20 6 9 17 4 12"}),
+    settings: React.createElement(Fragment, null, React.createElement("circle",{cx:12,cy:12,r:3}), React.createElement("path",{d:"M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"})),
+    chevLeft: React.createElement("polyline",{points:"15 18 9 12 15 6"}),
+    chevRight: React.createElement("polyline",{points:"9 18 15 12 9 6"}),
+    clock: React.createElement(Fragment, null, React.createElement("circle",{cx:12,cy:12,r:10}), React.createElement("polyline",{points:"12 6 12 12 16 14"})),
+  };
+  return React.createElement("svg", {width:size, height:size, viewBox:"0 0 24 24", fill:"none", stroke:"currentColor", strokeWidth:"2", strokeLinecap:"round", strokeLinejoin:"round"}, icons[name]);
+};
+
+const Modal = ({ open, onClose, title, children, wide }) => {
+  if (!open) return null;
+  return <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16}}>
+    <div onClick={e=>e.stopPropagation()} style={{background:"#1a1f2e",borderRadius:16,padding:28,width:wide?640:460,maxWidth:"95vw",maxHeight:"90vh",overflowY:"auto",border:"1px solid rgba(255,255,255,0.08)",boxShadow:"0 24px 80px rgba(0,0,0,0.6)"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+        <h2 style={{margin:0,fontSize:18,fontWeight:700,color:"#f0f4f8"}}>{title}</h2>
+        <button onClick={onClose} style={{background:"none",border:"none",color:"#8892a4",cursor:"pointer",padding:4}}><Icon name="x"/></button>
+      </div>
+      {children}
+    </div>
+  </div>;
+};
+
+const Field = ({label, children}) => <div style={{marginBottom:16}}>
+  <label style={{display:"block",fontSize:12,fontWeight:600,color:"#8892a4",marginBottom:6,textTransform:"uppercase",letterSpacing:"0.05em"}}>{label}</label>
+  {children}
+</div>;
+
+const inputStyle = {width:"100%",padding:"10px 14px",background:"#0f1320",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,color:"#f0f4f8",fontSize:14,outline:"none",boxSizing:"border-box",fontFamily:"'JetBrains Mono', monospace"};
+const btnPrimary = {padding:"10px 24px",background:"linear-gradient(135deg, #0EA5E9, #6366F1)",border:"none",borderRadius:10,color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer"};
+const btnSecondary = {padding:"10px 24px",background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,color:"#c1c9d6",fontSize:14,fontWeight:600,cursor:"pointer"};
+
+const generateSampleFlights = () => [
+  {id:"copa01",clientId:"c3",tailNumber:"HP-1990",arrivalDate:"2026-04-09",arrivalTime:"03:00",departureDate:"2026-04-09",departureTime:"04:54",serviceType:"transit",notes:"CM8900/CM8901 | SAP→MIA→PTY | B737-800BCF | 1h54m ground"},
+  {id:"copa02",clientId:"c3",tailNumber:"HP-1522",arrivalDate:"2026-04-11",arrivalTime:"05:00",departureDate:"2026-04-11",departureTime:"07:00",serviceType:"transit",notes:"CM8900/CM8901 | PTY→MIA→PTY | B737-800BCF | 2hr ground"},
+  {id:"copa03",clientId:"c3",tailNumber:"HP-1990",arrivalDate:"2026-04-16",arrivalTime:"03:00",departureDate:"2026-04-16",departureTime:"04:54",serviceType:"transit",notes:"CM8900/CM8901 | SAP→MIA→PTY | B737-800BCF | 1h54m ground"},
+  {id:"copa04",clientId:"c3",tailNumber:"HP-1522",arrivalDate:"2026-04-18",arrivalTime:"05:00",departureDate:"2026-04-18",departureTime:"07:00",serviceType:"transit",notes:"CM8900/CM8901 | PTY→MIA→PTY | B737-800BCF | 2hr ground"},
+  {id:"copa05",clientId:"c3",tailNumber:"HP-1990",arrivalDate:"2026-04-23",arrivalTime:"03:00",departureDate:"2026-04-23",departureTime:"04:54",serviceType:"transit",notes:"CM8900/CM8901 | SAP→MIA→PTY | B737-800BCF | 1h54m ground"},
+  {id:"copa06",clientId:"c3",tailNumber:"HP-1522",arrivalDate:"2026-04-25",arrivalTime:"05:00",departureDate:"2026-04-25",departureTime:"07:00",serviceType:"transit",notes:"CM8900/CM8901 | PTY→MIA→PTY | B737-800BCF | 2hr ground"},
+  {id:"copa07",clientId:"c3",tailNumber:"HP-1990",arrivalDate:"2026-04-30",arrivalTime:"03:00",departureDate:"2026-04-30",departureTime:"04:54",serviceType:"transit",notes:"CM8900/CM8901 | SAP→MIA→PTY | B737-800BCF | 1h54m ground"},
+  {id:"ram01",clientId:"c4",tailNumber:"CN-RGT",arrivalDate:"2026-04-01",arrivalTime:"19:45",departureDate:"2026-04-01",departureTime:"21:45",serviceType:"transit",notes:"AT204/AT205 | CMN→MIA→CMN | B787-8 | 2hr ground"},
+  {id:"ram02",clientId:"c4",tailNumber:"CN-RGU",arrivalDate:"2026-04-03",arrivalTime:"19:45",departureDate:"2026-04-03",departureTime:"21:45",serviceType:"transit",notes:"AT204/AT205 | CMN→MIA→CMN | B787-8 | 2hr ground"},
+  {id:"ram03",clientId:"c4",tailNumber:"CN-RGT",arrivalDate:"2026-04-05",arrivalTime:"19:45",departureDate:"2026-04-05",departureTime:"21:45",serviceType:"transit",notes:"AT204/AT205 | CMN→MIA→CMN | B787-8 | 2hr ground"},
+  {id:"ram04",clientId:"c4",tailNumber:"CN-RGU",arrivalDate:"2026-04-08",arrivalTime:"19:45",departureDate:"2026-04-08",departureTime:"21:45",serviceType:"transit",notes:"AT204/AT205 | CMN→MIA→CMN | B787-8 | 2hr ground"},
+  {id:"ram05",clientId:"c4",tailNumber:"CN-RGC",arrivalDate:"2026-04-10",arrivalTime:"19:45",departureDate:"2026-04-10",departureTime:"21:45",serviceType:"transit",notes:"AT204/AT205 | CMN→MIA→CMN | B787-8 | 2hr ground"},
+  {id:"ram06",clientId:"c4",tailNumber:"CN-RGC",arrivalDate:"2026-04-12",arrivalTime:"19:45",departureDate:"2026-04-12",departureTime:"21:45",serviceType:"transit",notes:"AT204/AT205 | CMN→MIA→CMN | B787-8 | 2hr ground"},
+];
+
+function StatusBadge({flight}) {
+  const now = new Date();
+  const arr = new Date(flight.arrivalDate + "T" + flight.arrivalTime);
+  const dep = new Date((flight.departureDate||flight.arrivalDate) + "T" + flight.departureTime);
+  let label="Programado", color="#8892a4", bg="rgba(136,146,164,0.1)";
+  if(now>=arr&&now<=dep){label="En Bahía";color="#10B981";bg="rgba(16,185,129,0.15)";}
+  else if(now>dep){label="Completado";color="#6366F1";bg="rgba(99,102,241,0.15)";}
+  return <span style={{fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20,color,background:bg,whiteSpace:"nowrap"}}>{label}</span>;
+}
+
+function FlightForm({clients,initial,onSave,onDelete,onCancel,selectedDate}) {
+  const [form, setForm] = useState(initial || {clientId:clients[0]?.id||"",tailNumber:"",arrivalDate:selectedDate,arrivalTime:"08:00",departureDate:selectedDate,departureTime:"18:00",serviceType:"transit",notes:""});
+  const update = (k,v) => setForm(p=>({...p,[k]:v}));
+  const handleSave = () => { if(!form.tailNumber.trim()) return; onSave(form); };
+  return <>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+      <Field label="Cliente (Client)"><select value={form.clientId} onChange={e=>update("clientId",e.target.value)} style={inputStyle}>{clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
+      <Field label="Matrícula (Tail Number)"><input value={form.tailNumber} onChange={e=>update("tailNumber",e.target.value.toUpperCase())} placeholder="N12345" style={inputStyle}/></Field>
+      <Field label="Fecha Llegada (Arrival Date)"><input type="date" value={form.arrivalDate} onChange={e=>update("arrivalDate",e.target.value)} style={inputStyle}/></Field>
+      <Field label="Hora Llegada (ETA)"><input type="time" value={form.arrivalTime} onChange={e=>update("arrivalTime",e.target.value)} style={inputStyle}/></Field>
+      <Field label="Fecha Salida (Departure Date)"><input type="date" value={form.departureDate||form.arrivalDate} onChange={e=>update("departureDate",e.target.value)} style={inputStyle}/></Field>
+      <Field label="Hora Salida (ETD)"><input type="time" value={form.departureTime} onChange={e=>update("departureTime",e.target.value)} style={inputStyle}/></Field>
+    </div>
+    <Field label="Tipo de Servicio (Service Type)"><select value={form.serviceType} onChange={e=>update("serviceType",e.target.value)} style={inputStyle}>{SERVICE_TYPES.map(s=><option key={s.id} value={s.id}>{s.label} ({s.labelEs})</option>)}</select></Field>
+    <Field label="Notas (Notes)"><textarea value={form.notes||""} onChange={e=>update("notes",e.target.value)} rows={2} placeholder="Detalles adicionales..." style={{...inputStyle,resize:"vertical"}}/></Field>
+    <div style={{display:"flex",justifyContent:"space-between",marginTop:20}}>
+      <div>{onDelete && <button onClick={onDelete} style={{...btnSecondary,color:"#EF4444",borderColor:"rgba(239,68,68,0.3)"}}>Eliminar</button>}</div>
+      <div style={{display:"flex",gap:10}}><button onClick={onCancel} style={btnSecondary}>Cancelar</button><button onClick={handleSave} style={btnPrimary}>{initial?"Guardar Cambios":"Agregar Vuelo"}</button></div>
+    </div>
+  </>;
+}
+
+function ClientManager({clients,setClients}) {
+  const [editId,setEditId]=useState(null);
+  const [newClient,setNewClient]=useState({name:"",short:"",color:"#0EA5E9"});
+  const COLORS=["#0EA5E9","#F97316","#8B5CF6","#10B981","#EF4444","#F59E0B","#EC4899","#14B8A6","#6366F1","#84CC16"];
+  const addClient=()=>{if(!newClient.name.trim()||!newClient.short.trim())return;setClients(p=>[...p,{...newClient,id:"c-"+Date.now()}]);setNewClient({name:"",short:"",color:"#0EA5E9"});};
+  const updateClient=(id,u)=>setClients(p=>p.map(c=>c.id===id?{...c,...u}:c));
+  const removeClient=(id)=>{if(clients.length<=1)return;setClients(p=>p.filter(c=>c.id!==id));};
+  return <div>
+    <div style={{marginBottom:20}}>{clients.map(c=><div key={c.id} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 12px",borderRadius:10,marginBottom:6,background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.05)"}}>
+      <div style={{width:12,height:12,borderRadius:"50%",background:c.color,flexShrink:0}}/>
+      {editId===c.id?<>
+        <input value={c.name} onChange={e=>updateClient(c.id,{name:e.target.value})} style={{...inputStyle,flex:1,padding:"6px 10px"}}/>
+        <input value={c.short} onChange={e=>updateClient(c.id,{short:e.target.value.toUpperCase()})} style={{...inputStyle,width:60,padding:"6px 10px"}} maxLength={4}/>
+        <div style={{display:"flex",gap:3}}>{COLORS.map(col=><div key={col} onClick={()=>updateClient(c.id,{color:col})} style={{width:18,height:18,borderRadius:"50%",background:col,cursor:"pointer",border:c.color===col?"2px solid #fff":"2px solid transparent"}}/>)}</div>
+        <button onClick={()=>setEditId(null)} style={{background:"none",border:"none",color:"#10B981",cursor:"pointer"}}><Icon name="check" size={16}/></button>
+      </>:<>
+        <span style={{flex:1,fontSize:14,fontWeight:500,color:"#f0f4f8"}}>{c.name}</span>
+        <span style={{fontSize:12,fontWeight:700,fontFamily:"'JetBrains Mono', monospace",color:c.color}}>{c.short}</span>
+        <button onClick={()=>setEditId(c.id)} style={{background:"none",border:"none",color:"#8892a4",cursor:"pointer"}}><Icon name="edit" size={14}/></button>
+        <button onClick={()=>removeClient(c.id)} style={{background:"none",border:"none",color:"#8892a4",cursor:"pointer",opacity:0.5}}><Icon name="trash" size={14}/></button>
+      </>}
+    </div>)}</div>
+    <div style={{display:"flex",gap:10,alignItems:"end"}}>
+      <Field label="Nombre"><input value={newClient.name} onChange={e=>setNewClient(p=>({...p,name:e.target.value}))} placeholder="Aerolínea XYZ" style={{...inputStyle,padding:"8px 12px"}}/></Field>
+      <Field label="Código"><input value={newClient.short} onChange={e=>setNewClient(p=>({...p,short:e.target.value.toUpperCase()}))} placeholder="XYZ" maxLength={4} style={{...inputStyle,width:70,padding:"8px 12px"}}/></Field>
+      <div style={{display:"flex",gap:3,paddingBottom:16}}>{COLORS.slice(0,5).map(col=><div key={col} onClick={()=>setNewClient(p=>({...p,color:col}))} style={{width:22,height:22,borderRadius:"50%",background:col,cursor:"pointer",border:newClient.color===col?"2px solid #fff":"2px solid transparent"}}/>)}</div>
+      <button onClick={addClient} style={{...btnPrimary,padding:"8px 16px",marginBottom:16,whiteSpace:"nowrap"}}>+ Agregar</button>
+    </div>
+  </div>;
+}
+
+function SheetsConfigPanel({config,clients,onSave,onSync,onCancel}) {
+  const [sheetId,setSheetId]=useState(config?.sheetId||"");
+  const [tabs,setTabs]=useState(config?.tabs||clients.map((c,i)=>({gid:"",clientId:c.id,name:c.name})));
+  const extractSheetId=(input)=>{const m=input.match(/\/d\/([a-zA-Z0-9_-]+)/);return m?m[1]:input.trim();};
+  const updateTab=(idx,field,value)=>setTabs(p=>p.map((t,i)=>i===idx?{...t,[field]:value}:t));
+  const handleSave=()=>{const cfg={sheetId:extractSheetId(sheetId),tabs:tabs.filter(t=>t.gid!=="")};onSave(cfg);};
+  const handleSync=()=>{const cfg={sheetId:extractSheetId(sheetId),tabs:tabs.filter(t=>t.gid!=="")};onSync(cfg);};
+  const infoStyle={fontSize:12,color:"#8892a4",lineHeight:1.6,marginBottom:16};
+  const codeStyle={background:"rgba(255,255,255,0.06)",padding:"2px 6px",borderRadius:4,fontFamily:"'JetBrains Mono', monospace",fontSize:11,color:"#0EA5E9"};
+  return <div>
+    <div style={infoStyle}><strong style={{color:"#f0f4f8"}}>Pasos para conectar:</strong><br/>
+    1. Sube el template Excel a Google Drive → Abrir como Google Sheets<br/>
+    2. En el Sheet: <span style={codeStyle}>Archivo → Compartir → Publicar en la web</span><br/>
+    3. Selecciona <span style={codeStyle}>Documento completo</span> → formato <span style={codeStyle}>Página web</span> → Publicar<br/>
+    4. Copia la URL del Google Sheet y pégala abajo<br/>
+    5. Para cada cliente, ingresa el <span style={codeStyle}>gid</span> de su tab</div>
+    <Field label="URL o ID del Google Sheet"><input value={sheetId} onChange={e=>setSheetId(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/1abc123.../edit" style={inputStyle}/></Field>
+    <div style={{fontSize:12,fontWeight:600,color:"#8892a4",marginBottom:10,textTransform:"uppercase",letterSpacing:"0.05em"}}>Tabs por Cliente — GID de cada tab</div>
+    <div style={infoStyle}>El <span style={codeStyle}>gid</span> aparece en la URL: <span style={codeStyle}>...#gid=<strong>123456789</strong></span></div>
+    {tabs.map((tab,idx)=>{const client=clients.find(c=>c.id===tab.clientId);return <div key={idx} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+      <div style={{width:10,height:10,borderRadius:"50%",background:client?.color||"#666",flexShrink:0}}/>
+      <span style={{fontSize:13,fontWeight:500,minWidth:160,color:"#f0f4f8"}}>{client?.name||tab.name}</span>
+      <input value={tab.gid} onChange={e=>updateTab(idx,"gid",e.target.value)} placeholder="gid (ej: 0, 123456789)" style={{...inputStyle,flex:1,padding:"8px 12px",fontSize:13}}/>
+    </div>;})}
+    <div style={{display:"flex",justifyContent:"space-between",marginTop:24}}>
+      <button onClick={onCancel} style={btnSecondary}>Cancelar</button>
+      <div style={{display:"flex",gap:10}}><button onClick={handleSave} style={btnSecondary}>Guardar Config</button><button onClick={handleSync} style={btnPrimary}>Guardar y Sincronizar</button></div>
+    </div>
+  </div>;
+}
+
+function App() {
+  const [flights,setFlights]=useState([]);
+  const [clients,setClients]=useState(DEFAULT_CLIENTS);
+  const [loaded,setLoaded]=useState(false);
+  const [view,setView]=useState("week");
+  const [selectedDate,setSelectedDate]=useState(todayStr());
+  const [clientFilter,setClientFilter]=useState("all");
+  const [showAddModal,setShowAddModal]=useState(false);
+  const [showClientModal,setShowClientModal]=useState(false);
+  const [editingFlight,setEditingFlight]=useState(null);
+  const [showTable,setShowTable]=useState(false);
+  const [showSheetsModal,setShowSheetsModal]=useState(false);
+  const [sheetsConfig,setSheetsConfig]=useState(null);
+  const [syncing,setSyncing]=useState(false);
+  const [lastSync,setLastSync]=useState(null);
+  const [syncError,setSyncError]=useState(null);
+
+  const syncFromSheets = useCallback(async (config) => {
+    if(!config?.sheetId||!config?.tabs?.length)return;
+    setSyncing(true); setSyncError(null);
+    try {
+      const allFlights=[];
+      for(const tab of config.tabs){
+        if(!tab.gid&&tab.gid!==0)continue;
+        const url=buildSheetCSVUrl(config.sheetId,tab.gid);
+        const resp=await fetch(url);
+        if(!resp.ok)throw new Error(`Error tab ${tab.name}: ${resp.status}`);
+        const text=await resp.text();
+        const rows=parseCSV(text);
+        allFlights.push(...rows.filter(r=>r.status!=="cancelled").map(r=>sheetRowToFlight(r,tab.clientId)));
+      }
+      setFlights(allFlights);
+      setLastSync(new Date().toLocaleTimeString("en-US",{timeZone:"America/New_York",hour:"2-digit",minute:"2-digit"}));
+    }catch(err){setSyncError(err.message);console.error(err);}
+    finally{setSyncing(false);}
+  },[]);
+
+  useEffect(()=>{
+    const f=loadData(STORAGE_KEY,[]);
+    const c=loadData(CLIENTS_KEY,DEFAULT_CLIENTS);
+    const sc=loadData(SHEETS_CONFIG_KEY,null);
+    setFlights(f.length>0?f:generateSampleFlights());
+    setClients(c);
+    if(sc)setSheetsConfig(sc);
+    setLoaded(true);
+    if(sc?.sheetId)setTimeout(()=>syncFromSheets(sc),500);
+  },[syncFromSheets]);
+
+  useEffect(()=>{if(loaded)saveData(STORAGE_KEY,flights);},[flights,loaded]);
+  useEffect(()=>{if(loaded)saveData(CLIENTS_KEY,clients);},[clients,loaded]);
+  useEffect(()=>{if(loaded&&sheetsConfig)saveData(SHEETS_CONFIG_KEY,sheetsConfig);},[sheetsConfig,loaded]);
+
+  const resetDemo=()=>{setFlights(generateSampleFlights());setClients(DEFAULT_CLIENTS);setView("week");setSelectedDate(todayStr());setClientFilter("all");};
+
+  const dateRange=useMemo(()=>{
+    if(view==="day")return{start:selectedDate,end:selectedDate};
+    if(view==="week")return getWeekRange(selectedDate);
+    return getMonthRange(selectedDate);
+  },[view,selectedDate]);
+  const datesInRange=useMemo(()=>getDatesInRange(dateRange.start,dateRange.end),[dateRange]);
+  const filteredFlights=useMemo(()=>flights.filter(f=>{
+    const inRange=f.arrivalDate>=dateRange.start&&f.arrivalDate<=dateRange.end;
+    const inClient=clientFilter==="all"||f.clientId===clientFilter;
+    return inRange&&inClient;
+  }),[flights,dateRange,clientFilter]);
+
+  const navigate=(dir)=>{const d=new Date(selectedDate+"T12:00:00");if(view==="day")d.setDate(d.getDate()+dir);else if(view==="week")d.setDate(d.getDate()+dir*7);else d.setMonth(d.getMonth()+dir);setSelectedDate(d.toISOString().slice(0,10));};
+  const addFlight=(flight)=>{setFlights(p=>[...p,{...flight,id:"f-"+Date.now()+Math.random().toString(36).slice(2,6)}]);setShowAddModal(false);};
+  const updateFlight=(flight)=>{setFlights(p=>p.map(f=>f.id===flight.id?flight:f));setEditingFlight(null);};
+  const deleteFlight=(id)=>{setFlights(p=>p.filter(f=>f.id!==id));setEditingFlight(null);};
+  const getClient=(id)=>clients.find(c=>c.id===id)||{name:"?",color:"#666",short:"?"};
+
+  const stats=useMemo(()=>{
+    const today=todayStr();
+    const todayFlights=flights.filter(f=>f.arrivalDate===today);
+    const wr=getWeekRange(today);
+    const weekFlights=flights.filter(f=>f.arrivalDate>=wr.start&&f.arrivalDate<=wr.end);
+    const now=new Date();
+    const inHangar=todayFlights.filter(f=>{const a=new Date(f.arrivalDate+"T"+f.arrivalTime);const d=new Date((f.departureDate||f.arrivalDate)+"T"+f.departureTime);return now>=a&&now<=d;});
+    return{today:todayFlights.length,week:weekFlights.length,inHangar:inHangar.length};
+  },[flights]);
+
+  const headerLabel=useMemo(()=>{
+    if(view==="day")return fmtDay(selectedDate+"T12:00:00");
+    if(view==="week")return `${fmtDay(dateRange.start+"T12:00:00")} — ${fmtDay(dateRange.end+"T12:00:00")}`;
+    return new Date(selectedDate+"T12:00:00").toLocaleDateString("es-US",{timeZone:MIAMI_TZ,month:"long",year:"numeric"});
+  },[view,selectedDate,dateRange]);
+
+  if(!loaded)return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#0d1117",color:"#8892a4"}}>Cargando...</div>;
+
+  return <div style={{minHeight:"100vh",background:"#0d1117",color:"#f0f4f8",fontFamily:"'DM Sans', sans-serif"}}>
+    {/* Header */}
+    <div style={{background:"linear-gradient(180deg, #131825 0%, #0d1117 100%)",borderBottom:"1px solid rgba(255,255,255,0.06)",padding:"20px 28px"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:16}}>
+        <div style={{display:"flex",alignItems:"center",gap:14}}>
+          <div style={{width:40,height:40,borderRadius:12,background:"linear-gradient(135deg, #0EA5E9, #6366F1)",display:"flex",alignItems:"center",justifyContent:"center"}}><Icon name="plane" size={20}/></div>
+          <div><h1 style={{margin:0,fontSize:20,fontWeight:700,letterSpacing:"-0.02em"}}>Flight Tech — Planning Board</h1><p style={{margin:0,fontSize:12,color:"#8892a4"}}>MRO Schedule Dashboard · Hora Miami (EST)</p></div>
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+          {sheetsConfig?.sheetId?<button onClick={()=>syncFromSheets(sheetsConfig)} disabled={syncing} style={{...btnSecondary,display:"flex",alignItems:"center",gap:6,padding:"8px 16px",fontSize:12,color:syncing?"#8892a4":"#10B981",borderColor:syncing?"rgba(255,255,255,0.06)":"rgba(16,185,129,0.3)"}}>{syncing?"⟳ Sincronizando...":"⟳ Sync Sheets"}{lastSync&&!syncing&&<span style={{fontSize:10,color:"#8892a4",marginLeft:4}}>({lastSync})</span>}</button>:null}
+          <button onClick={()=>setShowSheetsModal(true)} style={{...btnSecondary,display:"flex",alignItems:"center",gap:6,padding:"8px 16px",fontSize:12,color:sheetsConfig?.sheetId?"#10B981":"#F59E0B",borderColor:sheetsConfig?.sheetId?"rgba(16,185,129,0.3)":"rgba(245,158,11,0.3)"}}>📊 {sheetsConfig?.sheetId?"Sheets ✓":"Conectar Sheets"}</button>
+          <button onClick={resetDemo} style={{...btnSecondary,display:"flex",alignItems:"center",gap:6,padding:"8px 16px",fontSize:12,color:"#8892a4"}}>↻ Demo</button>
+          <button onClick={()=>setShowClientModal(true)} style={{...btnSecondary,display:"flex",alignItems:"center",gap:6,padding:"8px 16px"}}><Icon name="settings" size={15}/> Clientes</button>
+          <button onClick={()=>{setEditingFlight(null);setShowAddModal(true);}} style={{...btnPrimary,display:"flex",alignItems:"center",gap:6,padding:"8px 16px"}}><Icon name="plus" size={15}/> Nuevo Vuelo</button>
+        </div>
+      </div>
+      <div style={{display:"flex",gap:14,marginTop:20,flexWrap:"wrap"}}>
+        {[{label:"Hoy",value:stats.today,icon:"plane",color:"#0EA5E9"},{label:"Esta Semana",value:stats.week,icon:"calendar",color:"#8B5CF6"},{label:"En Bahía Ahora",value:stats.inHangar,icon:"clock",color:"#10B981"}].map(s=>
+          <div key={s.label} className="stat-card" style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:14,padding:"14px 20px",minWidth:140,transition:"all 0.2s"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}><div style={{color:s.color}}><Icon name={s.icon} size={14}/></div><span style={{fontSize:11,color:"#8892a4",textTransform:"uppercase",letterSpacing:"0.06em",fontWeight:600}}>{s.label}</span></div>
+            <span style={{fontSize:28,fontWeight:700,fontFamily:"'JetBrains Mono', monospace",color:s.color}}>{s.value}</span>
+          </div>
+        )}
+      </div>
+    </div>
+
+    {/* Toolbar */}
+    <div style={{padding:"16px 28px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12,borderBottom:"1px solid rgba(255,255,255,0.04)"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8}}>
+        <button onClick={()=>navigate(-1)} style={{...btnSecondary,padding:"7px 10px"}}><Icon name="chevLeft" size={16}/></button>
+        <button onClick={()=>setSelectedDate(todayStr())} style={{...btnSecondary,padding:"7px 14px",fontSize:13}}>Hoy</button>
+        <button onClick={()=>navigate(1)} style={{...btnSecondary,padding:"7px 10px"}}><Icon name="chevRight" size={16}/></button>
+        <span style={{fontSize:15,fontWeight:600,marginLeft:8,textTransform:"capitalize"}}>{headerLabel}</span>
+      </div>
+      <div style={{display:"flex",alignItems:"center",gap:10}}>
+        <div style={{display:"flex",background:"rgba(255,255,255,0.04)",borderRadius:10,border:"1px solid rgba(255,255,255,0.06)",overflow:"hidden"}}>
+          {["day","week","month"].map(v=><button key={v} className="view-btn" onClick={()=>setView(v)} style={{padding:"7px 16px",border:"none",fontSize:13,fontWeight:600,cursor:"pointer",background:view===v?"rgba(14,165,233,0.2)":"transparent",color:view===v?"#0EA5E9":"#8892a4",fontFamily:"'DM Sans', sans-serif"}}>{v==="day"?"Día":v==="week"?"Semana":"Mes"}</button>)}
+        </div>
+        <button onClick={()=>setShowTable(!showTable)} style={{...btnSecondary,padding:"7px 10px"}}><Icon name={showTable?"grid":"list"} size={16}/></button>
+        <select value={clientFilter} onChange={e=>setClientFilter(e.target.value)} style={{...inputStyle,width:"auto",minWidth:150,padding:"7px 32px 7px 12px",fontSize:13}}>
+          <option value="all">Todos los Clientes</option>
+          {clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <input type="date" value={selectedDate} onChange={e=>setSelectedDate(e.target.value)} style={{...inputStyle,width:"auto",padding:"7px 12px",fontSize:13}}/>
+      </div>
+    </div>
+
+    {/* Content */}
+    <div style={{padding:"20px 28px"}}>
+      {filteredFlights.length===0?
+        <div style={{textAlign:"center",padding:"60px 20px",color:"#8892a4"}}><Icon name="plane" size={48}/><p style={{fontSize:16,marginTop:16}}>No hay vuelos programados para este período</p><button onClick={()=>setShowAddModal(true)} style={{...btnPrimary,marginTop:12}}>Agregar Vuelo</button></div>
+      :showTable?
+        <div style={{overflowX:"auto"}}>{datesInRange.map(date=>{
+          const dayFlights=filteredFlights.filter(f=>f.arrivalDate===date).sort((a,b)=>a.arrivalTime.localeCompare(b.arrivalTime));
+          if(dayFlights.length===0)return null;
+          return <div key={date} style={{marginBottom:24}}>
+            {view!=="day"&&<h3 style={{fontSize:13,fontWeight:600,color:"#8892a4",marginBottom:10,textTransform:"capitalize"}}>{fmtDay(date+"T12:00:00")}</h3>}
+            <div style={{borderRadius:14,border:"1px solid rgba(255,255,255,0.06)",overflow:"hidden"}}>
+              <div style={{display:"grid",gridTemplateColumns:"60px 1fr 110px 110px 130px 100px 60px",padding:"10px 16px",background:"rgba(255,255,255,0.03)",fontSize:11,fontWeight:600,color:"#8892a4",textTransform:"uppercase",letterSpacing:"0.05em",gap:12}}>
+                <span>Cliente</span><span>Matrícula</span><span>ETA</span><span>ETD</span><span>Servicio</span><span>Status</span><span></span>
+              </div>
+              {dayFlights.map(f=>{const cl=getClient(f.clientId);const svc=SERVICE_TYPES.find(s=>s.id===f.serviceType);
+                return <div key={f.id} className="flight-row" style={{display:"grid",gridTemplateColumns:"60px 1fr 110px 110px 130px 100px 60px",padding:"12px 16px",borderTop:"1px solid rgba(255,255,255,0.04)",alignItems:"center",gap:12,cursor:"pointer"}} onClick={()=>{setEditingFlight(f);setShowAddModal(true);}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:8,height:8,borderRadius:"50%",background:cl.color,flexShrink:0}}/><span style={{fontSize:12,fontWeight:600,color:cl.color}}>{cl.short}</span></div>
+                  <span style={{fontSize:14,fontWeight:600,fontFamily:"'JetBrains Mono', monospace"}}>{f.tailNumber}</span>
+                  <span style={{fontSize:14,fontFamily:"'JetBrains Mono', monospace",color:"#10B981"}}>{f.arrivalTime}</span>
+                  <span style={{fontSize:14,fontFamily:"'JetBrains Mono', monospace",color:"#F97316"}}>{f.departureTime}</span>
+                  <span style={{fontSize:12,color:"#c1c9d6"}}>{svc?`${svc.label}`:f.serviceType}</span>
+                  <StatusBadge flight={f}/>
+                  <button onClick={e=>{e.stopPropagation();deleteFlight(f.id);}} style={{background:"none",border:"none",color:"#8892a4",cursor:"pointer",padding:4,opacity:0.5}}><Icon name="trash" size={14}/></button>
+                </div>;
+              })}
+            </div>
+          </div>;
+        })}</div>
+      :
+        <div style={{overflowX:"auto"}}>{datesInRange.map(date=>{
+          const dayFlights=filteredFlights.filter(f=>f.arrivalDate===date).sort((a,b)=>a.arrivalTime.localeCompare(b.arrivalTime));
+          if(dayFlights.length===0&&view==="day")return <div key={date} style={{textAlign:"center",padding:40,color:"#8892a4"}}>No hay vuelos programados</div>;
+          if(dayFlights.length===0)return null;
+          return <div key={date} style={{marginBottom:28}}>
+            {view!=="day"&&<h3 style={{fontSize:13,fontWeight:600,color:"#8892a4",marginBottom:10,textTransform:"capitalize"}}>{fmtDay(date+"T12:00:00")} — {dayFlights.length} vuelo{dayFlights.length>1?"s":""}</h3>}
+            <div style={{position:"relative",background:"rgba(255,255,255,0.02)",borderRadius:14,border:"1px solid rgba(255,255,255,0.06)",padding:"12px 16px",minHeight:60}}>
+              <div style={{display:"flex",borderBottom:"1px solid rgba(255,255,255,0.04)",paddingBottom:6,marginBottom:8}}>
+                {Array.from({length:24},(_,i)=><div key={i} style={{flex:1,fontSize:10,color:"#555d6e",textAlign:"center",fontFamily:"'JetBrains Mono', monospace"}}>{String(i).padStart(2,"0")}</div>)}
+              </div>
+              {dayFlights.map(f=>{const cl=getClient(f.clientId);const arrMin=timeToMinutes(f.arrivalTime);const depMin=timeToMinutes(f.departureTime);const totalMin=depMin>arrMin?depMin-arrMin:(1440-arrMin+depMin);const leftPct=(arrMin/1440)*100;const widthPct=Math.max((totalMin/1440)*100,2);
+                return <div key={f.id} style={{position:"relative",height:36,marginBottom:4,cursor:"pointer"}} onClick={()=>{setEditingFlight(f);setShowAddModal(true);}}>
+                  <div style={{position:"absolute",left:leftPct+"%",width:widthPct+"%",height:30,borderRadius:8,background:cl.color+"22",border:`1.5px solid ${cl.color}66`,display:"flex",alignItems:"center",padding:"0 10px",gap:8,overflow:"hidden",transition:"all 0.2s"}}>
+                    <span style={{fontSize:11,fontWeight:700,color:cl.color,whiteSpace:"nowrap"}}>{cl.short}</span>
+                    <span style={{fontSize:12,fontWeight:600,fontFamily:"'JetBrains Mono', monospace",whiteSpace:"nowrap",color:"#f0f4f8"}}>{f.tailNumber}</span>
+                    <span style={{fontSize:10,color:"#8892a4",whiteSpace:"nowrap",marginLeft:"auto"}}>{f.arrivalTime}→{f.departureTime}</span>
+                  </div>
+                </div>;
+              })}
+            </div>
+          </div>;
+        })}</div>
+      }
+    </div>
+
+    {syncError&&<div style={{margin:"0 28px",padding:"10px 16px",background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.3)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}><span style={{fontSize:13,color:"#EF4444"}}>Error: {syncError}</span><button onClick={()=>setSyncError(null)} style={{background:"none",border:"none",color:"#EF4444",cursor:"pointer"}}><Icon name="x" size={14}/></button></div>}
+
+    <Modal open={showAddModal} onClose={()=>{setShowAddModal(false);setEditingFlight(null);}} title={editingFlight?"Editar Vuelo":"Nuevo Vuelo"}>
+      <FlightForm clients={clients} initial={editingFlight} onSave={editingFlight?updateFlight:addFlight} onDelete={editingFlight?()=>deleteFlight(editingFlight.id):null} onCancel={()=>{setShowAddModal(false);setEditingFlight(null);}} selectedDate={selectedDate}/>
+    </Modal>
+    <Modal open={showClientModal} onClose={()=>setShowClientModal(false)} title="Gestión de Clientes" wide><ClientManager clients={clients} setClients={setClients}/></Modal>
+    <Modal open={showSheetsModal} onClose={()=>setShowSheetsModal(false)} title="📊 Conectar Google Sheets" wide>
+      <SheetsConfigPanel config={sheetsConfig} clients={clients} onSave={cfg=>{setSheetsConfig(cfg);setShowSheetsModal(false);}} onSync={cfg=>{setSheetsConfig(cfg);syncFromSheets(cfg);setShowSheetsModal(false);}} onCancel={()=>setShowSheetsModal(false)}/>
+    </Modal>
+  </div>;
+}
+
+ReactDOM.render(React.createElement(App), document.getElementById('root'));
+</script>
+</body>
+</html>
