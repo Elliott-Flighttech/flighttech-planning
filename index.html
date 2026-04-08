@@ -313,7 +313,7 @@ function App() {
     const f=loadData(STORAGE_KEY,[]);
     const c=loadData(CLIENTS_KEY,DEFAULT_CLIENTS);
     const sc=loadData(SHEETS_CONFIG_KEY,null);
-    setFlights(f.length>0?f:generateSampleFlights());
+    setFlights(f.length>0?f:(sc?.sheetId?[]:generateSampleFlights()));
     setClients(c);
     if(sc)setSheetsConfig(sc);
     setLoaded(true);
