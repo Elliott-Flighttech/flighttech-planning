@@ -33,6 +33,18 @@ const STORAGE_KEY = "ft-flights";
 const CLIENTS_KEY = "ft-clients";
 const SHEETS_CONFIG_KEY = "ft-sheets-config";
 
+const HARDCODED_SHEETS_CONFIG = {
+  sheetId: "1Je0HLCFI8K31bGQIv-4vpseo3hcZXZRkHpgTYRneDPI",
+  tabs: [
+    { gid: "101729361", clientId: "c1", name: "LTM - LATAM" },
+    { gid: "1572234093", clientId: "c2", name: "BOA - Boliviana" },
+    { gid: "1516496036", clientId: "c3", name: "COPC - Copa Cargo" },
+    { gid: "1367163560", clientId: "c4", name: "RAM - Royal Air Maroc" },
+    { gid: "540039293", clientId: "c5", name: "F2S - Fly2Sky" },
+    { gid: "1731203199", clientId: "c6", name: "TAB" },
+  ]
+};
+
 const buildSheetCSVUrl = (sheetId, gid) =>
   `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
 
@@ -284,7 +296,7 @@ function App() {
   const [editingFlight,setEditingFlight]=useState(null);
   const [showTable,setShowTable]=useState(false);
   const [showSheetsModal,setShowSheetsModal]=useState(false);
-  const [sheetsConfig,setSheetsConfig]=useState(null);
+  const [sheetsConfig,setSheetsConfig]=useState(HARDCODED_SHEETS_CONFIG);
   const [syncing,setSyncing]=useState(false);
   const [lastSync,setLastSync]=useState(null);
   const [syncError,setSyncError]=useState(null);
@@ -310,21 +322,15 @@ function App() {
   },[]);
 
   useEffect(()=>{
-    const f=loadData(STORAGE_KEY,[]);
     const c=loadData(CLIENTS_KEY,DEFAULT_CLIENTS);
-    const sc=loadData(SHEETS_CONFIG_KEY,null);
-    setFlights(f.length>0?f:(sc?.sheetId?[]:generateSampleFlights()));
     setClients(c);
-    if(sc)setSheetsConfig(sc);
     setLoaded(true);
-    if(sc?.sheetId)setTimeout(()=>syncFromSheets(sc),500);
+    setTimeout(()=>syncFromSheets(HARDCODED_SHEETS_CONFIG),300);
   },[syncFromSheets]);
 
-  useEffect(()=>{if(loaded)saveData(STORAGE_KEY,flights);},[flights,loaded]);
   useEffect(()=>{if(loaded)saveData(CLIENTS_KEY,clients);},[clients,loaded]);
-  useEffect(()=>{if(loaded&&sheetsConfig)saveData(SHEETS_CONFIG_KEY,sheetsConfig);},[sheetsConfig,loaded]);
 
-  const resetDemo=()=>{setFlights(generateSampleFlights());setClients(DEFAULT_CLIENTS);setView("week");setSelectedDate(todayStr());setClientFilter("all");};
+  const resetDemo=()=>{syncFromSheets(HARDCODED_SHEETS_CONFIG);setView("week");setSelectedDate(todayStr());setClientFilter("all");};
 
   const dateRange=useMemo(()=>{
     if(view==="day")return{start:selectedDate,end:selectedDate};
@@ -372,8 +378,8 @@ function App() {
         </div>
         <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
           {sheetsConfig?.sheetId?<button onClick={()=>syncFromSheets(sheetsConfig)} disabled={syncing} style={{...btnSecondary,display:"flex",alignItems:"center",gap:6,padding:"8px 16px",fontSize:12,color:syncing?"#8892a4":"#10B981",borderColor:syncing?"rgba(255,255,255,0.06)":"rgba(16,185,129,0.3)"}}>{syncing?"⟳ Sincronizando...":"⟳ Sync Sheets"}{lastSync&&!syncing&&<span style={{fontSize:10,color:"#8892a4",marginLeft:4}}>({lastSync})</span>}</button>:null}
-          <button onClick={()=>setShowSheetsModal(true)} style={{...btnSecondary,display:"flex",alignItems:"center",gap:6,padding:"8px 16px",fontSize:12,color:sheetsConfig?.sheetId?"#10B981":"#F59E0B",borderColor:sheetsConfig?.sheetId?"rgba(16,185,129,0.3)":"rgba(245,158,11,0.3)"}}>📊 {sheetsConfig?.sheetId?"Sheets ✓":"Conectar Sheets"}</button>
-          <button onClick={resetDemo} style={{...btnSecondary,display:"flex",alignItems:"center",gap:6,padding:"8px 16px",fontSize:12,color:"#8892a4"}}>↻ Demo</button>
+          <button onClick={()=>setShowSheetsModal(true)} style={{...btnSecondary,display:"flex",alignItems:"center",gap:6,padding:"8px 16px",fontSize:12,color:"#10B981",borderColor:"rgba(16,185,129,0.3)"}}>📊 Sheets ✓</button>
+          <button onClick={resetDemo} style={{...btnSecondary,display:"flex",alignItems:"center",gap:6,padding:"8px 16px",fontSize:12,color:"#8892a4"}}>↻ Recargar</button>
           <button onClick={()=>setShowClientModal(true)} style={{...btnSecondary,display:"flex",alignItems:"center",gap:6,padding:"8px 16px"}}><Icon name="settings" size={15}/> Clientes</button>
           <button onClick={()=>{setEditingFlight(null);setShowAddModal(true);}} style={{...btnPrimary,display:"flex",alignItems:"center",gap:6,padding:"8px 16px"}}><Icon name="plus" size={15}/> Nuevo Vuelo</button>
         </div>
