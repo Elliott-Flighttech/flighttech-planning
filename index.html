@@ -43,6 +43,7 @@ const HARDCODED_SHEETS_CONFIG = {
     { gid: "1367163560", clientId: "c4", name: "RAM - Royal Air Maroc" },
     { gid: "540039293", clientId: "c5", name: "F2S - Fly2Sky" },
     { gid: "1731203199", clientId: "c6", name: "TAB" },
+    { gid: "1820722262", clientId: "c7", name: "SKB - SKYBUS" },
   ]
 };
 
@@ -91,6 +92,7 @@ const DEFAULT_CLIENTS = [
   { id: "c4", name: "Royal Air Maroc", color: "#10B981", short: "RAM" },
   { id: "c5", name: "Fly2Sky", color: "#8B5CF6", short: "F2S" },
   { id: "c6", name: "TAB", color: "#EF4444", short: "TAB" },
+  { id: "c7", name: "Skybus", color: "#14B8A6", short: "SKB" },
 ];
 
 const SERVICE_TYPES = [
@@ -353,7 +355,15 @@ function App() {
 
   useEffect(()=>{
     const c=loadData(CLIENTS_KEY,DEFAULT_CLIENTS);
-    setClients(c);
+    // Merge: if localStorage has fewer clients than DEFAULT_CLIENTS, add the missing ones
+    // This ensures Skybus (c7) appears even for users who already had c1-c6 saved
+    const mergedClients = [...c];
+    DEFAULT_CLIENTS.forEach(defaultClient => {
+      if (!mergedClients.find(existing => existing.id === defaultClient.id)) {
+        mergedClients.push(defaultClient);
+      }
+    });
+    setClients(mergedClients);
     setLoaded(true);
     setTimeout(()=>syncFromSheets(HARDCODED_SHEETS_CONFIG),300);
   },[syncFromSheets]);
