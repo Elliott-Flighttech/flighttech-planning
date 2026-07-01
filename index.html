@@ -83,6 +83,8 @@ const sheetRowToFlight = (row, clientId) => ({
   bay: row.bay || "",
   notes: row.notes || "",
   status: row.status || "scheduled",
+  mechanics: (row.assigned_mechanics || row.mechanics || "")
+    .split(/[,;\/]/).map(s=>s.trim()).filter(Boolean),
 });
 
 const DEFAULT_CLIENTS = [
@@ -323,6 +325,7 @@ function App() {
   const [view,setView]=useState("week");
   const [selectedDate,setSelectedDate]=useState(todayStr());
   const [clientFilter,setClientFilter]=useState("all");
+  const [mechanicFilter,setMechanicFilter]=useState("all");
   const [showAddModal,setShowAddModal]=useState(false);
   const [showClientModal,setShowClientModal]=useState(false);
   const [editingFlight,setEditingFlight]=useState(null);
@@ -370,7 +373,7 @@ function App() {
 
   useEffect(()=>{if(loaded)saveData(CLIENTS_KEY,clients);},[clients,loaded]);
 
-  const resetDemo=()=>{syncFromSheets(HARDCODED_SHEETS_CONFIG);setView("week");setSelectedDate(todayStr());setClientFilter("all");};
+  const resetDemo=()=>{syncFromSheets(HARDCODED_SHEETS_CONFIG);setView("week");setSelectedDate(todayStr());setClientFilter("all");setMechanicFilter("all");};
 
   const dateRange=useMemo(()=>{
     if(view==="day")return{start:selectedDate,end:selectedDate};
@@ -387,8 +390,16 @@ function App() {
     const depDate = f.departureDate || f.arrivalDate;
     const overlaps = f.arrivalDate <= dateRange.end && depDate >= dateRange.start;
     const inClient = clientFilter==="all" || f.clientId===clientFilter;
-    return overlaps && inClient;
-  }),[flights,dateRange,clientFilter]);
+    const inMechanic = mechanicFilter==="all" || (f.mechanics||[]).includes(mechanicFilter);
+    return overlaps && inClient && inMechanic;
+  }),[flights,dateRange,clientFilter,mechanicFilter]);
+
+  // List of all mechanics currently assigned (for the filter dropdown)
+  const allMechanics=useMemo(()=>{
+    const set=new Set();
+    flights.forEach(f=>(f.mechanics||[]).forEach(m=>set.add(m)));
+    return [...set].sort((a,b)=>a.localeCompare(b));
+  },[flights]);
 
   const navigate=(dir)=>{const d=new Date(selectedDate+"T12:00:00");if(view==="day")d.setDate(d.getDate()+dir);else if(view==="week")d.setDate(d.getDate()+dir*7);else d.setMonth(d.getMonth()+dir);setSelectedDate(d.toISOString().slice(0,10));};
   const addFlight=(flight)=>{setFlights(p=>[...p,{...flight,id:"f-"+Date.now()+Math.random().toString(36).slice(2,6)}]);setShowAddModal(false);};
@@ -464,6 +475,10 @@ function App() {
           <option value="all">All Clients</option>
           {clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
+        <select value={mechanicFilter} onChange={e=>setMechanicFilter(e.target.value)} style={{...inputStyle,width:"auto",minWidth:150,padding:"7px 32px 7px 12px",fontSize:13}} title="Filter by mechanic">
+          <option value="all">All Mechanics</option>
+          {allMechanics.map(m=><option key={m} value={m}>{m}</option>)}
+        </select>
         <input type="date" value={selectedDate} onChange={e=>setSelectedDate(e.target.value)} style={{...inputStyle,width:"auto",padding:"7px 12px",fontSize:13}}/>
       </div>
     </div>
@@ -489,8 +504,8 @@ function App() {
           return <div key={date} style={{marginBottom:24}}>
             {view!=="day"&&<h3 style={{fontSize:13,fontWeight:600,color:"#8892a4",marginBottom:10,textTransform:"capitalize"}}>{fmtDay(date+"T12:00:00")}</h3>}
             <div style={{borderRadius:14,border:"1px solid rgba(255,255,255,0.06)",overflow:"hidden"}}>
-              <div style={{display:"grid",gridTemplateColumns:"60px 1fr 110px 110px 130px 100px 60px",padding:"10px 16px",background:"rgba(255,255,255,0.03)",fontSize:11,fontWeight:600,color:"#8892a4",textTransform:"uppercase",letterSpacing:"0.05em",gap:12}}>
-                <span>Client</span><span>Tail</span><span>ETA</span><span>ETD</span><span>Service</span><span>Status</span><span></span>
+              <div style={{display:"grid",gridTemplateColumns:"60px 1fr 90px 90px 110px 1fr 90px 50px",padding:"10px 16px",background:"rgba(255,255,255,0.03)",fontSize:11,fontWeight:600,color:"#8892a4",textTransform:"uppercase",letterSpacing:"0.05em",gap:12}}>
+                <span>Client</span><span>Tail</span><span>ETA</span><span>ETD</span><span>Service</span><span>Crew</span><span>Status</span><span></span>
               </div>
               {dayFlights.map(f=>{
                 const cl=getClient(f.clientId);
@@ -501,12 +516,17 @@ function App() {
                 // Show actual times on arrival/departure days; "—" for middle days (on bay all day)
                 const etaDisplay = isArrivalDay ? f.arrivalTime : "—";
                 const etdDisplay = isDepartureDay ? f.departureTime : "—";
-                return <div key={f.id + "-" + date} className="flight-row" style={{display:"grid",gridTemplateColumns:"60px 1fr 110px 110px 130px 100px 60px",padding:"12px 16px",borderTop:"1px solid rgba(255,255,255,0.04)",alignItems:"center",gap:12,cursor:"pointer"}} onClick={()=>{setEditingFlight(f);setShowAddModal(true);}}>
+                return <div key={f.id + "-" + date} className="flight-row" style={{display:"grid",gridTemplateColumns:"60px 1fr 90px 90px 110px 1fr 90px 50px",padding:"12px 16px",borderTop:"1px solid rgba(255,255,255,0.04)",alignItems:"center",gap:12,cursor:"pointer"}} onClick={()=>{setEditingFlight(f);setShowAddModal(true);}}>
                   <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:8,height:8,borderRadius:"50%",background:cl.color,flexShrink:0}}/><span style={{fontSize:12,fontWeight:600,color:cl.color}}>{cl.short}</span></div>
                   <span style={{fontSize:14,fontWeight:600,fontFamily:"'JetBrains Mono', monospace"}}>{f.tailNumber}</span>
                   <span style={{fontSize:14,fontFamily:"'JetBrains Mono', monospace",color:isArrivalDay?"#10B981":"#8892a4"}}>{etaDisplay}</span>
                   <span style={{fontSize:14,fontFamily:"'JetBrains Mono', monospace",color:isDepartureDay?"#F97316":"#8892a4"}}>{etdDisplay}</span>
                   <span style={{fontSize:12,color:"#c1c9d6"}}>{svc?`${svc.label}`:f.serviceType}</span>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                    {(f.mechanics&&f.mechanics.length)?f.mechanics.map((m,i)=>
+                      <span key={i} style={{fontSize:11,fontWeight:600,color:"#f0f4f8",background:"rgba(14,165,233,0.18)",border:"1px solid rgba(14,165,233,0.35)",borderRadius:6,padding:"2px 7px",whiteSpace:"nowrap"}}>{m}</span>
+                    ):<span style={{fontSize:11,color:"#5a6472",fontStyle:"italic"}}>— sin asignar</span>}
+                  </div>
                   <StatusBadge flight={f}/>
                   <button onClick={e=>{e.stopPropagation();deleteFlight(f.id);}} style={{background:"none",border:"none",color:"#8892a4",cursor:"pointer",padding:4,opacity:0.5}}><Icon name="trash" size={14}/></button>
                 </div>;
