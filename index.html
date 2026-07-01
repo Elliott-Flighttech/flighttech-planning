@@ -401,6 +401,15 @@ function App() {
     return [...set].sort((a,b)=>a.localeCompare(b));
   },[flights]);
 
+  // Mechanics assigned within the CURRENT view (respects date range + filters),
+  // with how many flights each one covers. Powers the header crew panel.
+  const viewMechanics=useMemo(()=>{
+    const counts={};
+    filteredFlights.forEach(f=>(f.mechanics||[]).forEach(m=>{counts[m]=(counts[m]||0)+1;}));
+    return Object.entries(counts).map(([name,count])=>({name,count}))
+      .sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name));
+  },[filteredFlights]);
+
   const navigate=(dir)=>{const d=new Date(selectedDate+"T12:00:00");if(view==="day")d.setDate(d.getDate()+dir);else if(view==="week")d.setDate(d.getDate()+dir*7);else d.setMonth(d.getMonth()+dir);setSelectedDate(d.toISOString().slice(0,10));};
   const addFlight=(flight)=>{setFlights(p=>[...p,{...flight,id:"f-"+Date.now()+Math.random().toString(36).slice(2,6)}]);setShowAddModal(false);};
   const updateFlight=(flight)=>{setFlights(p=>p.map(f=>f.id===flight.id?flight:f));setEditingFlight(null);};
@@ -455,6 +464,24 @@ function App() {
             <span style={{fontSize:28,fontWeight:700,fontFamily:"'JetBrains Mono', monospace",color:s.color}}>{s.value}</span>
           </div>
         )}
+        <div className="stat-card" style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:"14px 20px",flex:"1 1 260px",minWidth:240,backdropFilter:"blur(8px)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}><div style={{color:"#F59E0B"}}><Icon name="settings" size={14}/></div><span style={{fontSize:11,color:"#8892a4",textTransform:"uppercase",letterSpacing:"0.06em",fontWeight:600}}>Mechanics on Duty ({view==="day"?"día":view==="week"?"semana":"mes"})</span></div>
+          {viewMechanics.length===0
+            ?<span style={{fontSize:12,color:"#5a6472",fontStyle:"italic"}}>Sin mecánicos asignados en esta vista</span>
+            :<div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+              {viewMechanics.map(m=>{
+                const active=mechanicFilter===m.name;
+                return <button key={m.name} onClick={()=>setMechanicFilter(active?"all":m.name)} title={active?"Quitar filtro":"Filtrar por "+m.name}
+                  style={{display:"flex",alignItems:"center",gap:6,fontSize:12,fontWeight:600,cursor:"pointer",borderRadius:8,padding:"4px 9px",
+                    color:active?"#0d1117":"#f0f4f8",
+                    background:active?"#F59E0B":"rgba(245,158,11,0.15)",
+                    border:"1px solid "+(active?"#F59E0B":"rgba(245,158,11,0.35)")}}>
+                  {m.name}
+                  <span style={{fontSize:10,fontWeight:700,fontFamily:"'JetBrains Mono', monospace",background:active?"rgba(13,17,23,0.25)":"rgba(245,158,11,0.25)",borderRadius:5,padding:"1px 5px"}}>{m.count}</span>
+                </button>;
+              })}
+            </div>}
+        </div>
       </div>
     </div>
 
@@ -569,11 +596,12 @@ function App() {
                 // Edge indicators: dashed right border on the start day (continues), dashed left on end day
                 const borderLeft = !seg.isStart ? `2px dashed ${cl.color}aa` : `2px solid ${cl.color}aa`;
                 const borderRight = !seg.isEnd ? `2px dashed ${cl.color}aa` : `2px solid ${cl.color}aa`;
-                return <div key={f.id + "-" + date} style={{position:"relative",height:36,marginBottom:4,cursor:"pointer"}} onClick={()=>{setEditingFlight(f);setShowAddModal(true);}}>
+                return <div key={f.id + "-" + date} title={f.tailNumber+(f.mechanics&&f.mechanics.length?" — "+f.mechanics.join(", "):" — sin asignar")} style={{position:"relative",height:36,marginBottom:4,cursor:"pointer"}} onClick={()=>{setEditingFlight(f);setShowAddModal(true);}}>
                   <div style={{position:"absolute",left:seg.leftPct+"%",width:seg.widthPct+"%",height:30,borderRadius,background:cl.color+"44",borderTop:`2px solid ${cl.color}aa`,borderBottom:`2px solid ${cl.color}aa`,borderLeft,borderRight,boxShadow:`0 0 12px ${cl.color}33`,display:"flex",alignItems:"center",padding:"0 10px",gap:8,overflow:"hidden",transition:"all 0.2s"}}>
                     {seg.isStart && <span style={{fontSize:11,fontWeight:700,color:cl.color,whiteSpace:"nowrap"}}>{cl.short}</span>}
                     {seg.isStart && <span style={{fontSize:12,fontWeight:700,fontFamily:"'JetBrains Mono', monospace",whiteSpace:"nowrap",color:"#fff",textShadow:"0 1px 4px rgba(0,0,0,0.4)"}}>{f.tailNumber}</span>}
                     {!seg.isStart && <span style={{fontSize:11,fontWeight:600,color:cl.color,whiteSpace:"nowrap",opacity:0.8}}>↻ {f.tailNumber}</span>}
+                    {seg.isStart && f.mechanics && f.mechanics.length>0 && <span style={{fontSize:10,fontWeight:600,color:"#0d1117",background:"#F59E0B",borderRadius:5,padding:"1px 6px",whiteSpace:"nowrap",textShadow:"none"}}>🔧 {f.mechanics.join(", ")}</span>}
                     <span style={{fontSize:10,color:"#c1c9d6",whiteSpace:"nowrap",marginLeft:"auto",fontWeight:500}}>
                       {seg.isSingleDay
                         ? `${f.arrivalTime}→${f.departureTime}`
